@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>材料力学助手</title>
+
+    <!-- Markdown 渲染 -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- 数学公式渲染 -->
+    <script>
+        window.MathJax = {
+            tex: {
+                inlineMath: [['$', '$'], ['\\(', '\\)']],
+                displayMath: [['$$', '$$'], ['\\[', '\\]']]
+            },
+            options: {
+                skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+            },
+            startup: {
+                typeset: false
+            }
+        };
+    </script>
+    <script
+        id="MathJax-script"
+        async
+        src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/3.2.2/es5/tex-mml-chtml.js">
+    </script>
+
+    <style>
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            padding: 24px 14px;
+            background: #f3f6fb;
+            color: #243044;
+            font-family: "Microsoft YaHei", Arial, sans-serif;
+        }
+
+        .app {
+            max-width: 900px;
+            min-height: calc(100vh - 48px);
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            background: #fff;
+            border-radius: 16px;
+            box-shadow: 0 8px 30px rgba(30, 50, 80, 0.08);
+            overflow: hidden;
+        }
+
+        .header {
+            padding: 24px 26px 18px;
+            color: #fff;
+            background: linear-gradient(135deg, #2864c5, #4388e8);
+        }
+
+        .header h1 {
+            margin: 0 0 8px;
+            font-size: 25px;
+        }
+
+        .header p {
+            margin: 0;
+            opacity: 0.92;
+            font-size: 14px;
+        }
+
+        .toolbar {
+            min-height: 52px;
+            padding: 10px 18px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            border-bottom: 1px solid #edf0f5;
+            color: #68758a;
+            font-size: 13px;
+        }
+
+        button {
+            font: inherit;
+            cursor: pointer;
+        }
+
+        #clear-btn {
+            border: 1px solid #d9e1ed;
+            border-radius: 8px;
+            padding: 7px 12px;
+            background: #fff;
+            color: #56647a;
+        }
+
+        #clear-btn:hover { background: #f4f7fb; }
+
+        #chat-area {
+            flex: 1;
+            min-height: 300px;
+            padding: 22px;
+            overflow-y: auto;
+        }
+
+        .welcome {
+            margin: 8px auto 22px;
+            max-width: 600px;
+            padding: 20px;
+            border: 1px solid #e4ebf5;
+            border-radius: 12px;
+            background: #f8faff;
+            line-height: 1.8;
+        }
+
+        .welcome h2 {
+            margin: 0 0 10px;
+            font-size: 19px;
+            color: #2d5fa8;
+        }
+
+        .welcome p { margin: 5px 0; }
+
+        .message {
+            display: flex;
+            margin: 16px 0;
+            gap: 10px;
+        }
+
+        .message.user { justify-content: flex-end; }
+
+        .bubble {
+            max-width: 88%;
+            padding: 12px 15px;
+            border-radius: 12px;
+            line-height: 1.75;
+            overflow-wrap: anywhere;
+        }
+
+        .message.user .bubble {
+            background: #dceaff;
+            color: #203b63;
+            border-bottom-right-radius: 4px;
+        }
+
+        .message.assistant .bubble {
+            background: #f2f5f9;
+            color: #263449;
+            border-bottom-left-radius: 4px;
+        }
+
+        .bubble p { margin: 0 0 10px; }
+        .bubble p:last-child { margin-bottom: 0; }
+        .bubble pre {
+            overflow-x: auto;
+            padding: 12px;
+            border-radius: 8px;
+            background: #e8edf4;
+        }
+        .bubble code {
+            overflow-wrap: anywhere;
+        }
+        .bubble table {
+            display: block;
+            max-width: 100%;
+            overflow-x: auto;
+            border-collapse: collapse;
+        }
+        .bubble th, .bubble td {
+            border: 1px solid #cfd8e5;
+            padding: 6px 9px;
+        }
+        .bubble th { background: #e8eef7; }
+
+        .input-area {
+            padding: 16px 18px 18px;
+            border-top: 1px solid #edf0f5;
+            background: #fff;
+        }
+
+        .input-row {
+            display: flex;
+            align-items: flex-end;
+            gap: 10px;
+        }
+
+        #question {
+            flex: 1;
+            min-width: 0;
+            min-height: 48px;
+            max-height: 180px;
+            resize: vertical;
+            border: 1px solid #d5deeb;
+            border-radius: 10px;
+            padding: 12px;
+            font: inherit;
+            line-height: 1.5;
+            outline: none;
+        }
+
+        #question:focus {
+            border-color: #4388e8;
+            box-shadow: 0 0 0 3px rgba(67, 136, 232, 0.12);
+        }
+
+        #send-btn {
+            min-height: 48px;
+            border: 0;
+            border-radius: 10px;
+            padding: 0 22px;
+            background: #2864c5;
+            color: white;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        #send-btn:hover { background: #1f55ad; }
+        #send-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+        .footer-note {
+            margin-top: 10px;
+            text-align: center;
+            color: #8a96a8;
+            font-size: 12px;
+        }
+
+        @media (max-width: 600px) {
+            body { padding: 0; }
+            .app {
+                min-height: 100vh;
+                border-radius: 0;
+            }
+            .header { padding: 20px 18px; }
+            #chat-area { padding: 14px; }
+            .bubble { max-width: 94%; }
+            .input-area { padding: 12px; }
+            #send-btn { padding: 0 15px; }
+        }
+    </style>
+</head>
+
+<body>
+<div class="app">
+    <header class="header">
+        <h1>材料力学助手</h1>
+        <p>让材料力学学习更简单</p>
+    </header>
+
+    <div class="toolbar">
+        <div id="status" role="status">可以开始提问</div>
+        <button id="clear-btn" type="button">清空记录</button>
+    </div>
+
+    <main id="chat-area">
+        <div id="welcome" class="welcome">
+            <h2>你好，欢迎使用材料力学助手！</h2>
+            <p>你可以向我提问概念、公式、例题和解题步骤。</p>
+            <p>支持数学公式、表格和 Markdown 排版。</p>
+        </div>
+    </main>
+
+    <footer class="input-area">
+        <div class="input-row">
+            <textarea id="question" placeholder="请输入材料力学问题……（Enter 发送，Shift+Enter 换行）"></textarea>
+            <button id="send-btn" type="button">发送问题</button>
+        </div>
+        <div class="footer-note">材料力学助手 · 学习与练习</div>
+    </footer>
+</div>
+
+<script>
+(function () {
+    "use strict";
+
+    const STORAGE_KEY = "material_mechanics_chat_history_v1";
+    const statusEl = document.getElementById("status");
+    const chatArea = document.getElementById("chat-area");
+    const welcome = document.getElementById("welcome");
+    const questionInput = document.getElementById("question");
+    const sendBtn = document.getElementById("send-btn");
+    const clearBtn = document.getElementById("clear-btn");
+
+    let chatHistory = [];
+    let isSending = false;
+
+    function setStatus(message) {
+        statusEl.textContent = message;
+    }
+
+    function saveHistory() {
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(chatHistory));
+        } catch (error) {
+            console.warn("无法保存本地聊天记录：", error);
+            setStatus("聊天可继续使用，但本地记录保存失败");
+        }
+    }
+
+    function loadHistory() {
+        try {
+            const saved = localStorage.getItem(STORAGE_KEY);
+            if (!saved) {
+                chatHistory = [];
+                return;
+            }
+
+            const parsed = JSON.parse(saved);
+            if (!Array.isArray(parsed)) {
+                chatHistory = [];
+                return;
+            }
+
+            chatHistory = parsed.filter(function (item) {
+                return item &&
+                    (item.role === "user" || item.role === "assistant") &&
+                    typeof item.content === "string";
+            });
+        } catch (error) {
+            console.warn("读取本地聊天记录失败：", error);
+            chatHistory = [];
+            setStatus("本地记录读取失败，可以继续提问");
+        }
+    }
+
+    function renderMarkdown(text) {
+        if (window.marked && typeof window.marked.parse === "function") {
+            return window.marked.parse(text);
+        }
+        const safe = document.createElement("div");
+        safe.textContent = text;
+        return safe.innerHTML.replace(/\n/g, "<br>");
+    }
+
+    function typesetMath(element) {
+        if (window.MathJax && window.MathJax.typesetPromise) {
+            window.MathJax.typesetPromise([element]).catch(function (error) {
+                console.warn("公式排版暂时失败：", error);
+            });
+        }
+    }
+
+    function appendMessage(role, content, shouldTypeset) {
+        const row = document.createElement("div");
+        row.className = "message " + role;
+
+        const bubble = document.createElement("div");
+        bubble.className = "bubble";
+
+        if (role === "assistant") {
+            bubble.innerHTML = renderMarkdown(content);
+        } else {
+            bubble.textContent = content;
+            bubble.style.whiteSpace = "pre-wrap";
+        }
+
+        row.appendChild(bubble);
+        chatArea.appendChild(row);
+
+        if (shouldTypeset && role === "assistant") {
+            typesetMath(bubble);
+        }
+
+        chatArea.scrollTop = chatArea.scrollHeight;
+    }
+
+    function renderHistory() {
+        chatArea.innerHTML = "";
+        if (chatHistory.length === 0) {
+            chatArea.appendChild(welcome);
+            return;
+        }
+
+        chatHistory.forEach(function (item) {
+            appendMessage(item.role, item.content, item.role === "assistant");
+        });
+    }
+
+    async function sendQuestion() {
+        if (isSending) return;
+
+        const question = questionInput.value.trim();
+        if (!question) {
+            setStatus("请先输入问题");
+            questionInput.focus();
+            return;
+        }
+
+        isSending = true;
+        sendBtn.disabled = true;
+        sendBtn.textContent = "发送中…";
+        setStatus("正在获取回答……");
+
+        if (welcome.parentNode) {
+            welcome.remove();
+        }
+
+        chatHistory.push({ role: "user", content: question });
+        appendMessage("user", question, false);
+        questionInput.value = "";
+        saveHistory();
+
+        try {
+            const response = await fetch("/chat", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ message: question })
+            });
+
+            if (!response.ok) {
+                throw new Error("服务器返回错误（HTTP " + response.status + "）");
+            }
+
+            const data = await response.json();
+            const answer = data && typeof data.reply === "string"
+                ? data.reply.trim()
+                : "";
+
+            if (!answer) {
+                throw new Error("服务器没有返回回答，请检查后端接口");
+            }
+
+            chatHistory.push({ role: "assistant", content: answer });
+            appendMessage("assistant", answer, true);
+            saveHistory();
+            setStatus("回答完成");
+        } catch (error) {
+            console.error("发送问题失败：", error);
+            const message = "抱歉，暂时无法获取回答。\n" +
+                "原因：" + (error.message || "网络或服务器异常") +
+                "\n请确认电脑上的 Flask 程序正在运行，然后重试。";
+            appendMessage("assistant", message, false);
+            setStatus("发送失败，请检查网页服务是否运行");
+        } finally {
+            isSending = false;
+            sendBtn.disabled = false;
+            sendBtn.textContent = "发送问题";
+            questionInput.focus();
+        }
+    }
+
+    function clearHistory() {
+        if (!window.confirm("确定要清空全部本地聊天记录吗？")) {
+            return;
+        }
+
+        chatHistory = [];
+        try {
+            localStorage.removeItem(STORAGE_KEY);
+        } catch (error) {
+            console.warn("清除本地记录失败：", error);
+        }
+
+        chatArea.innerHTML = "";
+        const newWelcome = welcome.cloneNode(true);
+        chatArea.appendChild(newWelcome);
+        setStatus("记录已清空，可以开始提问");
+    }
+
+    sendBtn.addEventListener("click", sendQuestion);
+    clearBtn.addEventListener("click", clearHistory);
+
+    questionInput.addEventListener("keydown", function (event) {
+        if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            sendQuestion();
+        }
+    });
+
+    // 初始化失败也不会卡住发送按钮或状态栏
+    try {
+        loadHistory();
+        renderHistory();
+    } catch (error) {
+        console.error("页面初始化时发生错误：", error);
+        chatHistory = [];
+        chatArea.innerHTML = "";
+        const newWelcome = welcome.cloneNode(true);
+        chatArea.appendChild(newWelcome);
+    }
+
+    if (statusEl.textContent === "正在初始化……" ||
+        statusEl.textContent.trim() === "") {
+        setStatus("可以开始提问");
+    } else if (chatHistory.length > 0 &&
+               statusEl.textContent === "可以开始提问") {
+        setStatus("已恢复 " + chatHistory.length + " 条聊天记录");
+    }
+})();
+</script>
+</body>
+</html>
