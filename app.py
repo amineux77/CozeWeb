@@ -419,5 +419,61 @@ def diag():
     return jsonify(result)
 
 
+@app.route("/diag/sleep/<int:sec>")
+def diag_sleep(sec):
+    """临时：纯 sleep 不联网，用来测量平台允许的最大请求时长。"""
+    import time
+
+    if sec < 0 or sec > 60:
+        return error_response("sec 需在 0-60 之间。", 400, "bad_param")
+    time.sleep(sec)
+    return jsonify({"ok": True, "slept": sec})
+
+
+@app.route("/diag/coze")
+def diag_coze():
+    """临时：用真实令牌做一次最小 stream_run，验证令牌有效性与扣子端到端耗时。"""
+    import time
+
+    token = get_token()
+    if not token:
+        return error_response("尚未配置 COZE_TOKEN。", 500, "no_token")
+
+    payload = {
+        "content": {"query": {"prompt": [
+            {"type": "text", "content": {"text": "回答一个字：好"}}
+        ]}},
+        "type": "query",
+        "session_id": SESSION_ID,
+        "project_id": PROJECT_ID,
+    }
+    headers = {
+        "Authorization": "Bearer " + token,
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    }
+
+    t0 = time.time()
+    try:
+        r = requests.post(STREAM_RUN_URL, headers=headers, json=payload,
+                          stream=True, timeout=(CONNECT_TIMEOUT, 20))
+        status = r.status_code
+        events = []
+        for line in r.iter_lines(decode_unicode=True):
+            line = (line or "").strip()
+            if line.startswith("data:"):
+                events.append(line[:200])
+            if len(events) >= 3:
+                break
+        r.close()
+        return jsonify({"ok": True, "status": status,
+                        "seconds": round(time.time() - t0, 3),
+                        "first_events": events})
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": type(exc).__name__,
+                        "message": str(exc)[:200],
+                        "seconds": round(time.time() - t0, 3)})
+
+
 if __name__ == "__main__":
     app.run(debug=True)
