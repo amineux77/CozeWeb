@@ -44,7 +44,14 @@ EXTENSION_TO_MIMETYPE = {
 }
 
 MAX_IMAGE_SIZE = 10 * 1024 * 1024
-REQUEST_TIMEOUT = 120
+
+# 出网超时拆分为「连接」与「读取」两段：
+#   - 连接超时设短：网络不通 / 被限制时快速失败并返回明确 JSON 错误，
+#     而不是让请求长时间挂住（挂住会被平台网关判为 APP_UNREACHABLE）；
+#   - 读取超时放宽：给模型生成回答留出时间。
+CONNECT_TIMEOUT = 5
+READ_TIMEOUT = 120
+REQUEST_TIMEOUT = (CONNECT_TIMEOUT, READ_TIMEOUT)
 
 
 class CozeError(Exception):
@@ -363,6 +370,53 @@ def upload_image():
 @app.errorhandler(413)
 def file_too_large(error):
     return error_response("上传文件过大，请选择 10 MB 以内的文件。", 413, "file_too_large")
+
+
+@app.errorhandler(Exception)
+def handle_unexpected(error):
+    """兜底：任何未捕获异常都返回 JSON，绝不把 HTML 错误页抛给前端。"""
+    from werkzeug.exceptions import HTTPException
+
+    if isinstance(error, HTTPException):
+        return error
+
+    logger.exception("未捕获异常")
+    return error_response("服务器内部错误，请稍后重试。", 500, "internal_error")
+
+
+@app.route("/diag")
+def diag():
+    """
+    临时诊断接口：确认部署环境能否访问扣子接口及各步骤真实耗时。
+    只返回「是否已配置令牌」，绝不返回令牌内容。
+    """
+    import time
+
+    result = {
+        "ok": True,
+        "token_configured": bool(get_token()),
+        "project_id": PROJECT_ID,
+        "project_domain": PROJECT_DOMAIN,
+        "api_base": COZE_API_BASE,
+    }
+
+    def probe(url):
+        t0 = time.time()
+        try:
+            r = requests.get(url, timeout=(CONNECT_TIMEOUT, 10))
+            return {"endpoint": url, "status": r.status_code,
+                    "seconds": round(time.time() - t0, 3)}
+        except Exception as exc:  # noqa: BLE001
+            return {"endpoint": url, "error": type(exc).__name__,
+                    "message": str(exc)[:200],
+                    "seconds": round(time.time() - t0, 3)}
+
+    result["probes"] = {
+        "coze_api_root": probe(COZE_API_BASE + "/"),
+        "file_upload": probe(FILE_UPLOAD_URL),
+        "stream_run": probe(STREAM_RUN_URL),
+    }
+    return jsonify(result)
 
 
 if __name__ == "__main__":
