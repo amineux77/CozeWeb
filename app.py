@@ -111,9 +111,30 @@ def describe_http_error(response):
         return "扣子拒绝访问（403）：令牌缺少所需权限，请在扣子开放平台为令牌勾选对应权限。"
     if status == 404:
         return "扣子接口不存在（404）：请确认项目域名与项目 ID 是否正确。"
+    if status == 429:
+        return ("扣子接口触发限流（429）：模型调用额度已用尽或请求过于频繁，"
+                "请在扣子账户中提高额度，或稍后重试。")
     if status >= 500:
         return "扣子服务异常（%d）：%s" % (status, detail or "请稍后重试。")
     return "扣子接口返回错误（%d）：%s" % (status, detail or "请稍后重试。")
+
+
+def friendly_coze_error(raw):
+    """
+    把扣子返回的原始错误翻译成用户能读懂的中文提示。
+
+    重点场景：账户模型额度用尽（SetLimitExceeded / 429）。
+    """
+    text = str(raw)
+    lowered = text.lower()
+    if ("setlimit exceeded" in lowered.replace(" ", "")
+            or "usage limit" in lowered
+            or "ratelimiterror" in lowered
+            or "429" in text):
+        return ("扣子账户的模型使用额度已用尽（模型 deepseek-v4-1-flash）。"
+                "这不是程序故障：请在扣子编程 / 扣子开放平台中提高或重置该模型的使用限额，"
+                "额度恢复后即可继续问答与识题。")
+    return "扣子返回错误：%s" % text[:200]
 
 
 def upload_image_to_coze(image_data, filename, mimetype):
@@ -276,8 +297,7 @@ def run_project(prompt_items):
     reply = "".join(answer_parts).strip()
 
     if not reply and error_message:
-        raise CozeError("扣子返回错误：%s" % str(error_message)[:200],
-                        SERVER_ERROR_STATUS)
+        raise CozeError(friendly_coze_error(error_message), SERVER_ERROR_STATUS)
 
     return reply
 
