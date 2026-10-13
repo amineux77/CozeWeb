@@ -5,25 +5,85 @@ from flask import Flask, render_template, request, jsonify
 
 app = Flask(__name__)
 
+# 限制上传文件大小：10 MB
+app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
+
 COZE_URL = "https://gfpgvc3g9g.coze.site/stream_run"
 PROJECT_ID = "7692864184282873899"
 SESSION_ID = "1Gl-6qs58oTnbmYuwJ14d"
 
+# 允许上传的图片格式
+ALLOWED_IMAGE_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".webp"
+}
+
 
 @app.route("/")
 def index():
-    response = render_template("index.html")
-    print("当前加载的网页：templates/index.html")
-    return response
+    return render_template("index.html")
+
 
 @app.route("/chat", methods=["POST"])
 def chat():
+    # 兼容原来的网站 JSON 文字请求
     body = request.get_json(silent=True) or {}
     question = str(body.get("message", "")).strip()
 
     if not question:
         return jsonify({"reply": "请输入问题后再发送。"})
 
+    return ask_coze(question)
+
+
+@app.route("/upload-image", methods=["POST"])
+def upload_image():
+    """
+    接收网站上传的图片。
+    当前只进行格式和大小校验，不会假装图片已经传给 Coze。
+    """
+    image_file = request.files.get("image")
+
+    if image_file is None or not image_file.filename:
+        return jsonify({
+            "success": False,
+            "reply": "请先选择一张图片。"
+        }), 400
+
+    filename = os.path.basename(image_file.filename)
+    extension = os.path.splitext(filename)[1].lower()
+
+    if extension not in ALLOWED_IMAGE_EXTENSIONS:
+        return jsonify({
+            "success": False,
+            "reply": "目前仅支持 PNG、JPG、JPEG 和 WEBP 图片。"
+        }), 400
+
+    # 读取图片并检查实际文件大小
+    image_data = image_file.read()
+
+    if not image_data:
+        return jsonify({
+            "success": False,
+            "reply": "上传的图片为空，请重新选择。"
+        }), 400
+
+    if len(image_data) > 10 * 1024 * 1024:
+        return jsonify({
+            "success": False,
+            "reply": "图片不能超过 10 MB。"
+        }), 413
+
+    # 重要：这里尚未把图片传给 Coze。
+    # 下一步需要接入 Coze 实际支持的图片传输方式。
+    return jsonify({
+        "success": True,
+        "reply": "图片已上传到网站后端，但还没有发送给 Coze。下一步需要接通图片识别接口。",
+        "filename": filename,
+        "size": len(image_data)
+    })
+
+
+def ask_coze(question):
     token = os.environ.get("COZE_TOKEN")
 
     if not token:
@@ -68,13 +128,9 @@ def chat():
 
             response.raise_for_status()
 
-            for line in response.iter_lines(decode_unicode=False):
+            for line in response.iter_lines(decode_unicode=True):
                 if not line:
                     continue
-
-                # SSE 数据按 UTF-8 解码，避免中文乱码
-                if isinstance(line, bytes):
-                    line = line.decode("utf-8", errors="replace")
 
                 line = line.strip()
 
@@ -94,52 +150,49 @@ def chat():
                 if not isinstance(item, dict):
                     continue
 
-                # 你的接口使用 type="answer"，不是 event 字段
                 if item.get("type") == "answer":
                     content = item.get("content") or {}
 
                     if isinstance(content, dict):
-                        text = content.get("answer")
+                        answer = content.get("answer")
 
-                        if isinstance(text, str) and text:
-                            answer_parts.append(text)
+                        if isinstance(answer, str) and answer:
+                            answer_parts.append(answer)
 
-                # 如果接口返回错误事件，记录错误
                 elif item.get("type") == "error":
-                    content = item.get("content") or {}
-                    error_message = (
-                        content.get("error")
-                        if isinstance(content, dict)
-                        else None
+                    app.logger.error(
+                        "Coze 返回错误：%s",
+                        item.get("content")
                     )
 
-                    if error_message:
-                        app.logger.error(
-                            "Coze 返回错误：%s",
-                            error_message
-                        )
-
-        # 按接口事件顺序拼接回答片段
         reply = "".join(answer_parts).strip()
 
         if not reply:
-            reply = "没有提取到回答，请查看 CMD 窗口中的日志。"
+            reply = "没有获取到回答，请检查服务日志。"
 
         return jsonify({"reply": reply})
 
-    except requests.RequestException as e:
+    except requests.RequestException:
         app.logger.exception("调用 Coze 接口失败")
 
         return jsonify({
-            "reply": f"调用 Coze 接口失败：{str(e)}"
+            "reply": "调用 Coze 接口失败，请检查服务日志。"
         }), 502
 
     except Exception:
         app.logger.exception("处理回答时发生错误")
 
         return jsonify({
-            "reply": "处理回答时发生错误，请查看 CMD 窗口中的报错信息。"
+            "reply": "处理回答时发生错误，请检查服务日志。"
         }), 500
+
+
+@app.errorhandler(413)
+def file_too_large(error):
+    return jsonify({
+        "success": False,
+        "reply": "上传文件过大，请选择 10 MB 以内的文件。"
+    }), 413
 
 
 if __name__ == "__main__":
