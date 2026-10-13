@@ -536,5 +536,23 @@ def diag_coze2():
                         "seconds": round(time.time() - t0, 3)})
 
 
+@app.route("/diag/run")
+def diag_run():
+    """临时：直接调用 run_project，判断问题是否出在该函数内部。"""
+    import time
+
+    t0 = time.time()
+    try:
+        reply = run_project([
+            {"type": "text", "content": {"text": "回答一个字：好"}}
+        ])
+        return jsonify({"ok": True, "reply": reply,
+                        "seconds": round(time.time() - t0, 3)})
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": type(exc).__name__,
+                        "message": str(exc)[:200],
+                        "seconds": round(time.time() - t0, 3)})
+
+
 if __name__ == "__main__":
     app.run(debug=True)
