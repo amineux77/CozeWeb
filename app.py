@@ -588,6 +588,7 @@ def diag_raw():
     t0 = time.time()
     raw = []
     event_types = []
+    message_end_error = None
     status = None
     try:
         with requests.post(STREAM_RUN_URL, headers=headers, json=payload,
@@ -597,12 +598,17 @@ def diag_raw():
                 s = (line or "").strip()
                 if not s:
                     continue
-                raw.append(s[:600])
+                raw.append(s[:3000])
                 if s.startswith("data:"):
                     try:
                         item = json.loads(s[5:].strip())
                         if isinstance(item, dict):
                             event_types.append(item.get("type"))
+                            content = item.get("content")
+                            if isinstance(content, dict):
+                                me = content.get("message_end")
+                                if isinstance(me, dict) and me.get("message"):
+                                    message_end_error = me.get("message")
                     except Exception:  # noqa: BLE001
                         pass
         return jsonify({
@@ -611,6 +617,7 @@ def diag_raw():
             "seconds": round(time.time() - t0, 3),
             "line_count": len(raw),
             "event_types": event_types,
+            "message_end_error": (message_end_error or "")[:2500],
             "raw": raw[:60],
         })
     except Exception as exc:  # noqa: BLE001
