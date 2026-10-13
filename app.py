@@ -570,12 +570,13 @@ def diag_raw():
         return error_response("尚未配置 COZE_TOKEN。", 500, "no_token")
 
     q = request.args.get("q", "什么是应力？请用一句话回答。")
+    sid = request.args.get("session") or SESSION_ID
     payload = {
         "content": {"query": {"prompt": [
             {"type": "text", "content": {"text": q}}
         ]}},
         "type": "query",
-        "session_id": SESSION_ID,
+        "session_id": sid,
         "project_id": PROJECT_ID,
     }
     headers = {
