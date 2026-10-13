@@ -475,5 +475,66 @@ def diag_coze():
                         "seconds": round(time.time() - t0, 3)})
 
 
+@app.route("/diag/coze2", methods=["GET", "POST"])
+def diag_coze2():
+    """
+    临时隔离实验：区分 GET/POST、只读前 N 个事件 / 读完整个流，
+    定位到底是哪种组合会让应用挂掉。
+    """
+    import time
+
+    token = get_token()
+    if not token:
+        return error_response("尚未配置 COZE_TOKEN。", 500, "no_token")
+
+    mode = request.args.get("mode", "partial")
+
+    payload = {
+        "content": {"query": {"prompt": [
+            {"type": "text", "content": {"text": "回答一个字：好"}}
+        ]}},
+        "type": "query",
+        "session_id": SESSION_ID,
+        "project_id": PROJECT_ID,
+    }
+    headers = {
+        "Authorization": "Bearer " + token,
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    }
+
+    t0 = time.time()
+    events = []
+    total_lines = 0
+    status = None
+
+    try:
+        with requests.post(STREAM_RUN_URL, headers=headers, json=payload,
+                           stream=True, timeout=(CONNECT_TIMEOUT, 20)) as r:
+            status = r.status_code
+            for line in r.iter_lines(decode_unicode=True):
+                total_lines += 1
+                text = (line or "").strip()
+                if text.startswith("data:"):
+                    events.append(text[:160])
+                if mode == "partial" and len(events) >= 3:
+                    break
+
+        return jsonify({
+            "ok": True,
+            "mode": mode,
+            "method": request.method,
+            "status": status,
+            "total_lines": total_lines,
+            "event_count": len(events),
+            "last_events": events[-3:],
+            "seconds": round(time.time() - t0, 3),
+        })
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "mode": mode, "method": request.method,
+                        "error": type(exc).__name__, "message": str(exc)[:200],
+                        "seconds": round(time.time() - t0, 3)})
+
+
 if __name__ == "__main__":
     app.run(debug=True)
