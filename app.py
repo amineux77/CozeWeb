@@ -554,5 +554,69 @@ def diag_run():
                         "seconds": round(time.time() - t0, 3)})
 
 
+@app.route("/diag/status/<int:code>")
+def diag_status(code):
+    """临时：故意返回指定状态码，验证 Faable 网关是否会改写 502。"""
+    return jsonify({"ok": False, "reply": "deliberate_status", "code": code}), code
+
+
+@app.route("/diag/raw")
+def diag_raw():
+    """临时：抓取扣子返回的原始 SSE 全流，查看事件类型与 answer 事件。"""
+    import time
+
+    token = get_token()
+    if not token:
+        return error_response("尚未配置 COZE_TOKEN。", 500, "no_token")
+
+    q = request.args.get("q", "什么是应力？请用一句话回答。")
+    payload = {
+        "content": {"query": {"prompt": [
+            {"type": "text", "content": {"text": q}}
+        ]}},
+        "type": "query",
+        "session_id": SESSION_ID,
+        "project_id": PROJECT_ID,
+    }
+    headers = {
+        "Authorization": "Bearer " + token,
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    }
+
+    t0 = time.time()
+    raw = []
+    event_types = []
+    status = None
+    try:
+        with requests.post(STREAM_RUN_URL, headers=headers, json=payload,
+                           stream=True, timeout=(CONNECT_TIMEOUT, 60)) as r:
+            status = r.status_code
+            for line in r.iter_lines(decode_unicode=True):
+                s = (line or "").strip()
+                if not s:
+                    continue
+                raw.append(s[:600])
+                if s.startswith("data:"):
+                    try:
+                        item = json.loads(s[5:].strip())
+                        if isinstance(item, dict):
+                            event_types.append(item.get("type"))
+                    except Exception:  # noqa: BLE001
+                        pass
+        return jsonify({
+            "ok": True,
+            "status": status,
+            "seconds": round(time.time() - t0, 3),
+            "line_count": len(raw),
+            "event_types": event_types,
+            "raw": raw[:60],
+        })
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": type(exc).__name__,
+                        "message": str(exc)[:200],
+                        "seconds": round(time.time() - t0, 3)})
+
+
 if __name__ == "__main__":
     app.run(debug=True)
