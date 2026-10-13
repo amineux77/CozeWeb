@@ -483,16 +483,30 @@ async function sendQuestion() {
             });
         }
 
-        const data = await response.json();
+        // 先取原始文本再尝试解析，避免服务器返回非 JSON 时抛出难以理解的解析错误
+        const rawText = await response.text();
+        let data = null;
+        try {
+            data = JSON.parse(rawText);
+        } catch (parseError) {
+            data = null;
+        }
 
-        if (!response.ok) {
+        if (!data || typeof data !== "object") {
+            throw new Error(
+                "服务器返回了非预期的内容（HTTP " +
+                response.status + "），请稍后重试。"
+            );
+        }
+
+        if (!response.ok || data.ok === false) {
             throw new Error(
                 data.reply || "服务器返回错误（HTTP " +
                 response.status + "）"
             );
         }
 
-        const answer = data && typeof data.reply === "string"
+        const answer = typeof data.reply === "string"
             ? data.reply.trim()
             : "";
 

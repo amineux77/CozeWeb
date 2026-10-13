@@ -28,8 +28,12 @@ STREAM_RUN_URL = "https://" + PROJECT_DOMAIN + "/stream_run"
 COZE_API_BASE = os.environ.get("COZE_API_BASE", "https://api.coze.cn").rstrip("/")
 FILE_UPLOAD_URL = COZE_API_BASE + "/v1/vibe_projects/files/upload"
 
-# 仍使用原来的会话 ID，保持原有文字问答行为不变
-SESSION_ID = "1Gl-6qs58oTnbmYuwJ14d"
+# 会话 ID：
+# 旧的硬编码会话（1Gl-6qs58oTnbmYuwJ14d）内部残留了一张无法解码的图片，
+# 复用它会让每次运行都稳定报 "image data 0 failed: Unable to decode the image"，
+# 连纯文字提问也会失败。因此默认每次调用都生成全新会话，避免历史会话状态污染；
+# 如确需固定会话，可通过环境变量 COZE_SESSION_ID 指定。
+FIXED_SESSION_ID = os.environ.get("COZE_SESSION_ID", "").strip() or None
 
 # 允许上传的图片格式
 ALLOWED_IMAGE_EXTENSIONS = {
@@ -46,18 +50,22 @@ EXTENSION_TO_MIMETYPE = {
 MAX_IMAGE_SIZE = 10 * 1024 * 1024
 
 # 出网超时拆分为「连接」与「读取」两段：
-#   - 连接超时设短：网络不通 / 被限制时快速失败并返回明确 JSON 错误，
-#     而不是让请求长时间挂住（挂住会被平台网关判为 APP_UNREACHABLE）；
+#   - 连接超时设短：网络不通 / 被限制时快速失败并返回明确 JSON 错误；
 #   - 读取超时放宽：给模型生成回答留出时间。
 CONNECT_TIMEOUT = 5
 READ_TIMEOUT = 120
 REQUEST_TIMEOUT = (CONNECT_TIMEOUT, READ_TIMEOUT)
 
+# 重要（已在线上实测确认）：Faable 网关会把应用返回的 502 / 503 / 504
+# 一律改写为它自己的 {"error":"APP_UNREACHABLE"}，把我们的错误信息吞掉。
+# 因此所有「服务端已处理并给出明确原因」的错误统一使用 500，确保能透传到前端。
+SERVER_ERROR_STATUS = 500
+
 
 class CozeError(Exception):
     """调用扣子接口失败时抛出，携带应返回给前端的 HTTP 状态码。"""
 
-    def __init__(self, message, status_code=502):
+    def __init__(self, message, status_code=SERVER_ERROR_STATUS):
         super().__init__(message)
         self.message = message
         self.status_code = status_code
@@ -100,8 +108,7 @@ def describe_http_error(response):
     if status == 401:
         return "扣子鉴权失败（401）：令牌无效或已过期，请检查服务端 COZE_TOKEN 配置。"
     if status == 403:
-        return "扣子拒绝访问（403）：令牌缺少所需权限（run / uploadFileToStorage），" \
-               "请在扣子开放平台为令牌勾选对应权限。"
+        return "扣子拒绝访问（403）：令牌缺少所需权限，请在扣子开放平台为令牌勾选对应权限。"
     if status == 404:
         return "扣子接口不存在（404）：请确认项目域名与项目 ID 是否正确。"
     if status >= 500:
@@ -120,7 +127,8 @@ def upload_image_to_coze(image_data, filename, mimetype):
     """
     token = get_token()
     if not token:
-        raise CozeError("尚未配置扣子令牌（COZE_TOKEN），无法上传图片。", 500)
+        raise CozeError("尚未配置扣子令牌（COZE_TOKEN），无法上传图片。",
+                        SERVER_ERROR_STATUS)
 
     headers = {"Authorization": "Bearer " + token}
     files = {"file": (filename, image_data, mimetype or "application/octet-stream")}
@@ -135,23 +143,24 @@ def upload_image_to_coze(image_data, filename, mimetype):
             timeout=REQUEST_TIMEOUT,
         )
     except requests.Timeout:
-        raise CozeError("上传图片到扣子超时，请稍后重试。", 504)
+        raise CozeError("上传图片到扣子超时，请稍后重试。", SERVER_ERROR_STATUS)
     except requests.RequestException as exc:
-        raise CozeError("无法连接扣子文件上传接口：%s" % exc, 502)
+        raise CozeError("无法连接扣子文件上传接口：%s" % exc, SERVER_ERROR_STATUS)
 
     if response.status_code >= 400:
-        raise CozeError(describe_http_error(response), 502)
+        raise CozeError(describe_http_error(response), SERVER_ERROR_STATUS)
 
     try:
         payload = response.json()
     except ValueError:
-        raise CozeError("扣子文件上传接口返回了无法解析的内容。", 502)
+        raise CozeError("扣子文件上传接口返回了无法解析的内容。", SERVER_ERROR_STATUS)
 
     image_url = _extract_url(payload)
     if not image_url:
         logger.error("上传接口未返回图片 URL，响应键：%s",
                      list(payload.keys()) if isinstance(payload, dict) else type(payload))
-        raise CozeError("扣子文件上传接口未返回图片地址，图片未能进入识题流程。", 502)
+        raise CozeError("扣子文件上传接口未返回图片地址，图片未能进入识题流程。",
+                        SERVER_ERROR_STATUS)
 
     logger.info("图片上传成功：filename=%s size=%d", filename, len(image_data))
     return image_url
@@ -182,7 +191,8 @@ def run_project(prompt_items):
     """
     token = get_token()
     if not token:
-        raise CozeError("尚未配置扣子令牌（COZE_TOKEN），请检查环境变量。", 500)
+        raise CozeError("尚未配置扣子令牌（COZE_TOKEN），请检查环境变量。",
+                        SERVER_ERROR_STATUS)
 
     payload = {
         "content": {
@@ -191,7 +201,8 @@ def run_project(prompt_items):
             }
         },
         "type": "query",
-        "session_id": SESSION_ID,
+        # 每次调用使用全新会话，避免复用历史会话导致的图片状态污染
+        "session_id": FIXED_SESSION_ID or uuid.uuid4().hex,
         "project_id": PROJECT_ID,
     }
 
@@ -214,7 +225,7 @@ def run_project(prompt_items):
         ) as response:
 
             if response.status_code >= 400:
-                raise CozeError(describe_http_error(response), 502)
+                raise CozeError(describe_http_error(response), SERVER_ERROR_STATUS)
 
             for line in response.iter_lines(decode_unicode=True):
                 if not line:
@@ -250,15 +261,23 @@ def run_project(prompt_items):
                     error_message = content.get("error") or content
                     logger.error("扣子返回错误事件：%s", error_message)
 
+                elif item_type == "message_end" and isinstance(content, dict):
+                    # 扣子把运行失败原因放在 message_end.content.message_end.message
+                    end_info = content.get("message_end")
+                    if isinstance(end_info, dict) and end_info.get("message"):
+                        error_message = end_info.get("message")
+                        logger.error("扣子 message_end 错误：%s", error_message)
+
     except requests.Timeout:
-        raise CozeError("调用扣子接口超时，请稍后重试。", 504)
+        raise CozeError("调用扣子接口超时，请稍后重试。", SERVER_ERROR_STATUS)
     except requests.RequestException as exc:
-        raise CozeError("无法连接扣子运行接口：%s" % exc, 502)
+        raise CozeError("无法连接扣子运行接口：%s" % exc, SERVER_ERROR_STATUS)
 
     reply = "".join(answer_parts).strip()
 
     if not reply and error_message:
-        raise CozeError("扣子返回错误：%s" % str(error_message)[:200], 502)
+        raise CozeError("扣子返回错误：%s" % str(error_message)[:200],
+                        SERVER_ERROR_STATUS)
 
     return reply
 
@@ -286,7 +305,8 @@ def chat():
         return error_response(exc.message, exc.status_code, "coze_error")
 
     if not reply:
-        return error_response("没有获取到回答，请稍后重试。", 502, "empty_answer")
+        return error_response("没有获取到回答，请稍后重试。",
+                              SERVER_ERROR_STATUS, "empty_answer")
 
     return success_response(reply)
 
@@ -316,7 +336,7 @@ def upload_image():
         return error_response("上传的图片为空，请重新选择。", 400, "empty_file")
 
     if len(image_data) > MAX_IMAGE_SIZE:
-        return error_response("图片不能超过 10 MB。", 413, "file_too_large")
+        return error_response("图片不能超过 10 MB。", 400, "file_too_large")
 
     mimetype = (image_file.mimetype or "").lower()
     if mimetype not in EXTENSION_TO_MIMETYPE.values():
@@ -361,7 +381,8 @@ def upload_image():
         return error_response(exc.message, exc.status_code, "coze_error")
 
     if not reply:
-        return error_response("图片已提交，但模型没有返回内容，请稍后重试。", 502, "empty_answer")
+        return error_response("图片已提交，但模型没有返回内容，请稍后重试。",
+                              SERVER_ERROR_STATUS, "empty_answer")
 
     logger.info("图片识题完成：filename=%s has_text=%s", filename, bool(message))
     return success_response(reply)
@@ -369,7 +390,7 @@ def upload_image():
 
 @app.errorhandler(413)
 def file_too_large(error):
-    return error_response("上传文件过大，请选择 10 MB 以内的文件。", 413, "file_too_large")
+    return error_response("上传文件过大，请选择 10 MB 以内的文件。", 400, "file_too_large")
 
 
 @app.errorhandler(Exception)
@@ -381,249 +402,8 @@ def handle_unexpected(error):
         return error
 
     logger.exception("未捕获异常")
-    return error_response("服务器内部错误，请稍后重试。", 500, "internal_error")
-
-
-@app.route("/diag")
-def diag():
-    """
-    临时诊断接口：确认部署环境能否访问扣子接口及各步骤真实耗时。
-    只返回「是否已配置令牌」，绝不返回令牌内容。
-    """
-    import time
-
-    result = {
-        "ok": True,
-        "token_configured": bool(get_token()),
-        "project_id": PROJECT_ID,
-        "project_domain": PROJECT_DOMAIN,
-        "api_base": COZE_API_BASE,
-    }
-
-    def probe(url):
-        t0 = time.time()
-        try:
-            r = requests.get(url, timeout=(CONNECT_TIMEOUT, 10))
-            return {"endpoint": url, "status": r.status_code,
-                    "seconds": round(time.time() - t0, 3)}
-        except Exception as exc:  # noqa: BLE001
-            return {"endpoint": url, "error": type(exc).__name__,
-                    "message": str(exc)[:200],
-                    "seconds": round(time.time() - t0, 3)}
-
-    result["probes"] = {
-        "coze_api_root": probe(COZE_API_BASE + "/"),
-        "file_upload": probe(FILE_UPLOAD_URL),
-        "stream_run": probe(STREAM_RUN_URL),
-    }
-    return jsonify(result)
-
-
-@app.route("/diag/sleep/<int:sec>")
-def diag_sleep(sec):
-    """临时：纯 sleep 不联网，用来测量平台允许的最大请求时长。"""
-    import time
-
-    if sec < 0 or sec > 60:
-        return error_response("sec 需在 0-60 之间。", 400, "bad_param")
-    time.sleep(sec)
-    return jsonify({"ok": True, "slept": sec})
-
-
-@app.route("/diag/coze")
-def diag_coze():
-    """临时：用真实令牌做一次最小 stream_run，验证令牌有效性与扣子端到端耗时。"""
-    import time
-
-    token = get_token()
-    if not token:
-        return error_response("尚未配置 COZE_TOKEN。", 500, "no_token")
-
-    payload = {
-        "content": {"query": {"prompt": [
-            {"type": "text", "content": {"text": "回答一个字：好"}}
-        ]}},
-        "type": "query",
-        "session_id": SESSION_ID,
-        "project_id": PROJECT_ID,
-    }
-    headers = {
-        "Authorization": "Bearer " + token,
-        "Content-Type": "application/json",
-        "Accept": "text/event-stream",
-    }
-
-    t0 = time.time()
-    try:
-        r = requests.post(STREAM_RUN_URL, headers=headers, json=payload,
-                          stream=True, timeout=(CONNECT_TIMEOUT, 20))
-        status = r.status_code
-        events = []
-        for line in r.iter_lines(decode_unicode=True):
-            line = (line or "").strip()
-            if line.startswith("data:"):
-                events.append(line[:200])
-            if len(events) >= 3:
-                break
-        r.close()
-        return jsonify({"ok": True, "status": status,
-                        "seconds": round(time.time() - t0, 3),
-                        "first_events": events})
-    except Exception as exc:  # noqa: BLE001
-        return jsonify({"ok": False, "error": type(exc).__name__,
-                        "message": str(exc)[:200],
-                        "seconds": round(time.time() - t0, 3)})
-
-
-@app.route("/diag/coze2", methods=["GET", "POST"])
-def diag_coze2():
-    """
-    临时隔离实验：区分 GET/POST、只读前 N 个事件 / 读完整个流，
-    定位到底是哪种组合会让应用挂掉。
-    """
-    import time
-
-    token = get_token()
-    if not token:
-        return error_response("尚未配置 COZE_TOKEN。", 500, "no_token")
-
-    mode = request.args.get("mode", "partial")
-
-    payload = {
-        "content": {"query": {"prompt": [
-            {"type": "text", "content": {"text": "回答一个字：好"}}
-        ]}},
-        "type": "query",
-        "session_id": SESSION_ID,
-        "project_id": PROJECT_ID,
-    }
-    headers = {
-        "Authorization": "Bearer " + token,
-        "Content-Type": "application/json",
-        "Accept": "text/event-stream",
-    }
-
-    t0 = time.time()
-    events = []
-    total_lines = 0
-    status = None
-
-    try:
-        with requests.post(STREAM_RUN_URL, headers=headers, json=payload,
-                           stream=True, timeout=(CONNECT_TIMEOUT, 20)) as r:
-            status = r.status_code
-            for line in r.iter_lines(decode_unicode=True):
-                total_lines += 1
-                text = (line or "").strip()
-                if text.startswith("data:"):
-                    events.append(text[:160])
-                if mode == "partial" and len(events) >= 3:
-                    break
-
-        return jsonify({
-            "ok": True,
-            "mode": mode,
-            "method": request.method,
-            "status": status,
-            "total_lines": total_lines,
-            "event_count": len(events),
-            "last_events": events[-3:],
-            "seconds": round(time.time() - t0, 3),
-        })
-    except Exception as exc:  # noqa: BLE001
-        return jsonify({"ok": False, "mode": mode, "method": request.method,
-                        "error": type(exc).__name__, "message": str(exc)[:200],
-                        "seconds": round(time.time() - t0, 3)})
-
-
-@app.route("/diag/run")
-def diag_run():
-    """临时：直接调用 run_project，判断问题是否出在该函数内部。"""
-    import time
-
-    t0 = time.time()
-    try:
-        reply = run_project([
-            {"type": "text", "content": {"text": "回答一个字：好"}}
-        ])
-        return jsonify({"ok": True, "reply": reply,
-                        "seconds": round(time.time() - t0, 3)})
-    except Exception as exc:  # noqa: BLE001
-        return jsonify({"ok": False, "error": type(exc).__name__,
-                        "message": str(exc)[:200],
-                        "seconds": round(time.time() - t0, 3)})
-
-
-@app.route("/diag/status/<int:code>")
-def diag_status(code):
-    """临时：故意返回指定状态码，验证 Faable 网关是否会改写 502。"""
-    return jsonify({"ok": False, "reply": "deliberate_status", "code": code}), code
-
-
-@app.route("/diag/raw")
-def diag_raw():
-    """临时：抓取扣子返回的原始 SSE 全流，查看事件类型与 answer 事件。"""
-    import time
-
-    token = get_token()
-    if not token:
-        return error_response("尚未配置 COZE_TOKEN。", 500, "no_token")
-
-    q = request.args.get("q", "什么是应力？请用一句话回答。")
-    sid = request.args.get("session") or SESSION_ID
-    payload = {
-        "content": {"query": {"prompt": [
-            {"type": "text", "content": {"text": q}}
-        ]}},
-        "type": "query",
-        "session_id": sid,
-        "project_id": PROJECT_ID,
-    }
-    headers = {
-        "Authorization": "Bearer " + token,
-        "Content-Type": "application/json",
-        "Accept": "text/event-stream",
-    }
-
-    t0 = time.time()
-    raw = []
-    event_types = []
-    message_end_error = None
-    status = None
-    try:
-        with requests.post(STREAM_RUN_URL, headers=headers, json=payload,
-                           stream=True, timeout=(CONNECT_TIMEOUT, 60)) as r:
-            status = r.status_code
-            for line in r.iter_lines(decode_unicode=True):
-                s = (line or "").strip()
-                if not s:
-                    continue
-                raw.append(s[:3000])
-                if s.startswith("data:"):
-                    try:
-                        item = json.loads(s[5:].strip())
-                        if isinstance(item, dict):
-                            event_types.append(item.get("type"))
-                            content = item.get("content")
-                            if isinstance(content, dict):
-                                me = content.get("message_end")
-                                if isinstance(me, dict) and me.get("message"):
-                                    message_end_error = me.get("message")
-                    except Exception:  # noqa: BLE001
-                        pass
-        return jsonify({
-            "ok": True,
-            "status": status,
-            "seconds": round(time.time() - t0, 3),
-            "line_count": len(raw),
-            "event_types": event_types,
-            "message_end_error": (message_end_error or "")[:2500],
-            "raw": raw[:60],
-        })
-    except Exception as exc:  # noqa: BLE001
-        return jsonify({"ok": False, "error": type(exc).__name__,
-                        "message": str(exc)[:200],
-                        "seconds": round(time.time() - t0, 3)})
+    return error_response("服务器内部错误，请稍后重试。",
+                          SERVER_ERROR_STATUS, "internal_error")
 
 
 if __name__ == "__main__":
