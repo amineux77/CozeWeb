@@ -282,6 +282,19 @@ def run_project(prompt_items):
     return reply
 
 
+@app.after_request
+def no_cache_html(response):
+    """
+    页面 HTML 不做缓存：避免浏览器长期沿用旧版前端，
+    导致「旧前端 + 新后端」时出现奇怪的前端解析报错。
+    """
+    if response.mimetype == "text/html":
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
